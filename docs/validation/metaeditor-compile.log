@@ -1,8 +1,28 @@
 MT5 RiskGuard compile validation
 Date: 2026-09-06
 Toolchain: MetaEditor 5 build 6182 (5.0.0.6182)
+
+Session 1 (original, single-file source):
 Source: src/RiskGuard.mq5
 Source SHA-256: BA1185D9217DF31CDF9B7976853BADD392224530A2B48C48A9A0FC38E1651081
 Target: X64 Regular
 Result: 0 errors, 0 warnings
-Elapsed: 937 ms
+
+Session 2 (behavior-preserving refactor for testability):
+The evaluation logic was extracted into src/RiskGuardCore.mqh so a test-only
+harness (tests/RiskGuardTestHarness.mq5) can run the exact same checks against
+synthetic positions in Strategy Tester -- RiskGuard itself never opens trades,
+and Strategy Tester runs exactly one EA per test. src/RiskGuard.mq5 is now a
+thin wrapper calling into the shared header; OnInit/OnDeinit/OnTimer/
+OnTradeTransaction bodies are unchanged. This changes the file's hash from
+Session 1 without changing its behavior.
+
+Source: src/RiskGuard.mq5 (wrapper)
+Source SHA-256: DE1147A24F4B34D8002B26A01EE132FA185286F0F0D61F3733B8410EEB32B752
+Source: src/RiskGuardCore.mqh (shared logic)
+Source SHA-256: C11BEAA04BAFD5409D2B2E6DF2153E8117D36E997B88D74F06C8F39BD863A2A4
+Source: tests/RiskGuardTestHarness.mq5 (test-only, not shipped)
+Source SHA-256: E578974024C595C2EB8A1244BD64D3F29FA6366D9C4DFBAD18134982A0161816
+Target: X64 Regular
+Result (RiskGuard.mq5): 0 errors, 0 warnings, 1056 ms elapsed
+Result (RiskGuardTestHarness.mq5): 0 errors, 0 warnings, 979 ms elapsed

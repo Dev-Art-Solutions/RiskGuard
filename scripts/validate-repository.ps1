@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 $sourcePath = Join-Path $repositoryRoot 'src/RiskGuard.mq5'
+$corePath = Join-Path $repositoryRoot 'src/RiskGuardCore.mqh'
 $requiredFiles = @(
     'README.md',
     'LICENSE',
@@ -16,7 +17,9 @@ $requiredFiles = @(
     'docs/validation/demo-state-validation.log',
     'docs/images/riskguard-safe-panel.png',
     'examples/conservative.set',
-    'src/RiskGuard.mq5'
+    'src/RiskGuard.mq5',
+    'src/RiskGuardCore.mqh',
+    'tests/RiskGuardTestHarness.mq5'
 )
 
 foreach ($relativePath in $requiredFiles) {
@@ -26,7 +29,7 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-$source = Get-Content -Raw -LiteralPath $sourcePath
+$source = (Get-Content -Raw -LiteralPath $sourcePath) + "`n" + (Get-Content -Raw -LiteralPath $corePath)
 $requiredSourcePatterns = @(
     'RISK_SAFE',
     'RISK_RESTRICTED',

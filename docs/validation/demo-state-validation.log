@@ -2,11 +2,15 @@ MT5 RiskGuard demo state validation
 Date: 2026-09-06
 Terminal: VS Capital MetaTrader 5, build 6182
 Environment: demo-backed Strategy Tester, hedging account (identity omitted)
-Expert: Experts\RiskGuard\RiskGuard.ex5
-Source SHA-256: BA1185D9217DF31CDF9B7976853BADD392224530A2B48C48A9A0FC38E1651081
-Symbol/timeframe: EURUSD,M1
-Test interval: 2026-01-19 00:00 through 2026-01-20 00:00
-Liquidation inputs: disabled for every run
+Expert: Experts\RiskGuard\RiskGuard.ex5 and Experts\RiskGuardTestHarness\RiskGuardTestHarness.ex5
+Source SHA-256 (src/RiskGuard.mq5, post test-harness refactor): DE1147A24F4B34D8002B26A01EE132FA185286F0F0D61F3733B8410EEB32B752
+Source SHA-256 (src/RiskGuardCore.mqh): C11BEAA04BAFD5409D2B2E6DF2153E8117D36E997B88D74F06C8F39BD863A2A4
+Source SHA-256 (tests/RiskGuardTestHarness.mq5): E578974024C595C2EB8A1244BD64D3F29FA6366D9C4DFBAD18134982A0161816
+Symbol/timeframe: EURUSD, M1
+Test interval: 2026-01-19 00:00 through 2026-01-20 00:00 (DAY-01 used 2026-01-19 through 2026-01-21)
+Reproduction: tests/tester-configs/*.ini via tests/tester-configs/run-scenario.ps1 (CLI Strategy Tester, no GUI)
+
+== Session 1 (original) ==
 
 [PASS] SAFE
 Trigger: permissive session/spread inputs; EmergencyStop=false
@@ -25,12 +29,140 @@ Evidence: [RiskGuard] STATE_CHANGED | MT5 RiskGuard: SAFE -> EMERGENCY (EMERGENC
 Evidence: [RiskGuard] INITIAL_STATE | state=EMERGENCY reason=EMERGENCY_STOP
 Final balance: 10000.00 USD
 
-[NOT RUN] BLOCKED
-Planned trigger: MaxTradesPerDay=1 after an existing demo-account trade
-Reason: the demo account had no trades for the current broker day; no synthetic trade was opened.
+== Session 2 (this run) ==
+Introduced tests/RiskGuardTestHarness.mq5, a test-only Expert Advisor that opens
+synthetic positions at start-up before running the exact same RiskGuardCore.mqh
+evaluation logic as the production EA (Strategy Tester runs exactly one EA per
+test, and RiskGuard itself never opens trades). All scenarios below kept
+ClosePositionsOnEmergencyStop / ClosePositionsOnDailyLossBreach at false --
+no liquidation path was exercised this session.
 
-[NOT RUN] Liquidation and retry paths
-Reason: destructive inputs remained disabled. Multi-symbol closing, broker rejection,
-bounded retry exhaustion, and persistence-write failure paths require a controlled demo fixture.
+[PASS] CFG-02 (invalid configuration)
+Trigger: MaxSpreadPoints=0
+Evidence: [RiskGuard] INVALID_CONFIGURATION | MaxSpreadPoints must be at least 1
+Evidence: tester stopped because OnInit reports incorrect input parameters
 
-Privacy: account login, account holder, broker server identifier, and machine paths are omitted.
+[PASS] TIME-01 (inside session) / TIME-02 (outside session) / ALERT-01 (one alert per transition)
+Trigger: default session (08:00-18:00) over a full simulated day
+Evidence: 00:00 INITIAL_STATE RESTRICTED (OUTSIDE_TRADING_HOURS)
+Evidence: 08:00:00 STATE_CHANGED RESTRICTED -> SAFE (NONE)
+Evidence: 18:00:00 STATE_CHANGED SAFE -> RESTRICTED (OUTSIDE_TRADING_HOURS)
+Evidence: exactly one STATE_CHANGED line per transition -- no per-tick spam
+
+[PASS] SPREAD-02 (excessive spread) / SPREAD-03 (recovery) -- unplanned, from real EURUSD tick data
+Trigger: same day-cycle run; real broker spread widened past 30 points during the
+2026-01-19 22:08-22:16 window
+Evidence: 22:08:00 STATE_CHANGED -> RESTRICTED (SPREAD_LIMIT); 22:10:00 clears;
+22:15:30 SPREAD_LIMIT again; 22:16:30 clears again
+Reproduced identically across TIME-01/02, TIME-04, POS-01, RISK-02, SCOPE-02,
+TRADE-02 runs (same historical tick data), confirming the restriction both
+triggers and clears deterministically from real spread data.
+
+[PASS] TIME-03 (overnight session, 22:00-06:00)
+Trigger: TradingStartHour=22, TradingEndHour=6
+Evidence: 00:00:00 INITIAL_STATE SAFE reason=NONE (inside overnight window)
+Evidence: 06:00:00 STATE_CHANGED SAFE -> RESTRICTED (OUTSIDE_TRADING_HOURS)
+Evidence: 22:00:00 STATE_CHANGED RESTRICTED -> SAFE (NONE)
+
+[PASS] TIME-04 (24-hour session, start == end)
+Trigger: TradingStartHour=TradingEndHour=0, TradingStartMinute=TradingEndMinute=0
+Evidence: no OUTSIDE_TRADING_HOURS violation anywhere in the full-day run
+
+[PASS] STATE-02 (emergency priority over a concurrent violation)
+Trigger: EmergencyStop=true plus MaxSpreadPoints=1 (also violated)
+Evidence: INITIAL_STATE EMERGENCY reason=EMERGENCY_STOP for the entire run;
+no RESTRICTED/SPREAD_LIMIT state ever surfaces despite the tight spread limit
+
+[PASS] POS-01 (position cap) -- via RiskGuardTestHarness
+Trigger: MaxOpenPositions=3; harness opens 3 positions (200-point SL each)
+Evidence: INITIAL_STATE RESTRICTED reason=MAX_OPEN_POSITIONS
+Bonus: one position was stopped out by real price movement at 00:16:03,
+dropping the count below the cap -- STATE_CHANGED RESTRICTED -> SAFE (NONE),
+confirming the restriction also clears when the count drops.
+
+[PASS] RISK-01 (known risk, valid SL) -- implicit
+Evidence: every harness position with a 200-point SL and standard volume in
+this session's SAFE-state windows produced no MAX_RISK_PER_TRADE violation.
+
+[PASS] RISK-02 (excessive risk) -- via RiskGuardTestHarness
+Trigger: HarnessVolume=1.0, HarnessSLDistancePoints=200 (risk % over MaxRiskPerTradePercent=1.0)
+Evidence: INITIAL_STATE BLOCKED reason=MAX_RISK_PER_TRADE:EURUSD (symbol named in the violation)
+
+[PASS] RISK-03 (missing SL, rejection enabled -- default)
+Trigger: HarnessSLDistancePoints=0, RejectTradesWithoutSL=true
+Evidence: INITIAL_STATE BLOCKED reason=POSITION_WITHOUT_SL:EURUSD; stays BLOCKED
+for the full run (the position never auto-closes without a stop)
+
+[PASS] RISK-04 (missing SL, rejection disabled)
+Trigger: HarnessSLDistancePoints=0, RejectTradesWithoutSL=false
+Evidence: INITIAL_STATE RESTRICTED reason=POSITION_WITHOUT_SL:EURUSD (downgraded
+from BLOCKED, but never falls through to SAFE -- unknown risk is not safe)
+
+[PASS] TRADE-01 (entry count) -- implicit via TRADE-03/BLOCKED below
+Evidence: two harness market orders produced exactly two counted entries
+(trades_today reached MaxTradesPerDay=1 after the second, not the first)
+
+[PASS] TRADE-02 (exit exclusion)
+Trigger: MaxTradesPerDay=2; harness opens exactly one position with a 50-point
+SL that gets stopped out during the run (final balance 9999.50 USD, confirming
+the exit happened)
+Evidence: MAX_TRADES_PER_DAY never appears anywhere in the run -- the exit
+deal was correctly excluded, leaving the day's counted-entry total at 1
+
+[PASS] TRADE-03 / BLOCKED (daily trade limit) -- via RiskGuardTestHarness
+Previously recorded as NOT RUN (no demo-account trade existed for the broker
+day). Closed this session:
+Trigger: MaxTradesPerDay=1; harness opens 2 safe positions (0.01 lot, 200-point SL)
+Evidence: STATE_CHANGED SAFE -> BLOCKED (MAX_TRADES_PER_DAY); INITIAL_STATE
+BLOCKED reason=MAX_TRADES_PER_DAY
+
+[PASS] SCOPE-01 (account scope, filter=0) -- implicit
+Evidence: every non-SCOPE-02 harness run above used the default
+MagicNumberFilter=0 and counted its own positions/deals normally.
+
+[PASS] SCOPE-02 (magic scope excludes non-matching activity)
+Trigger: MagicNumberFilter=555; harness opens a position with magic=999 and no
+SL (which reliably produces BLOCKED when in scope, per RISK-03)
+Evidence: INITIAL_STATE SAFE reason=NONE -- the out-of-scope position is fully excluded
+
+[PASS] DAY-01 (new broker day)
+Trigger: two-day run, 2026-01-19 through 2026-01-21, default inputs
+Evidence: NEW_TRADING_DAY day=20260119 baseline_equity=10000.00 at 2026-01-19 00:00
+Evidence: NEW_TRADING_DAY day=20260120 baseline_equity=10000.00 at 2026-01-20 00:00
+(fresh baseline and restored_lock=false logged for each broker day)
+
+[PASS] LOSS-01 (below daily limit) -- implicit
+Evidence: default MaxDailyLossPercent=3.0 with no comparable loss never
+triggered MAX_DAILY_LOSS in any of this session's other runs.
+
+[PASS] LOSS-02 (daily breach, persistent lock)
+Trigger: MaxDailyLossPercent=0.001 (deliberately tiny); harness opens 1.0 lot,
+whose entry spread cost alone breaches it (loss=0.14% limit=0.00% logged)
+Evidence: DAILY_LOSS_BREACHED; STATE_CHANGED SAFE -> BLOCKED (MAX_DAILY_LOSS)
+Evidence: exactly one STATE_CHANGED for the entire remaining day -- the lock
+never reverted to SAFE despite the later SL-close and spread fluctuations,
+confirming the lock is genuinely persistent for the broker day.
+ClosePositionsOnDailyLossBreach stayed false -- non-destructive.
+
+[NOT RUN] DAY-02 (restart persistence)
+Reason: needs two separate terminal invocations sharing the same broker-day
+global-variable state; not attempted this session given the destructive-test
+authorization boundary was the priority.
+
+[NOT RUN] LOSS-04 (opt-in liquidation) / EMR-04 (emergency opt-in liquidation) /
+CLOSE-01..04 (multi-symbol filling, retry, retry ceiling, retry restart)
+Reason: destructive by design (ClosePositionsOnEmergencyStop /
+ClosePositionsOnDailyLossBreach = true actually closes positions). Left for
+explicit authorization before running, per the plan's default-OFF posture on
+destructive actions.
+
+[NOT RUN] TRADE-04 (HistorySelect failure) / RISK-05 (OrderCalcProfit failure) /
+PERSIST-01..03 (SafeGlobalSet / lock-write / retry-write failures)
+Reason: these require injecting a terminal-API failure (a broken HistorySelect,
+OrderCalcProfit, or GlobalVariableSet call) that a real MT5 terminal does not
+expose a way to force; TEST_PLAN.md already scopes these as needing "a
+controlled environment" beyond a live/demo terminal.
+
+Privacy: account login, account holder, broker server identifier, and machine
+paths are omitted from the evidence above (see the raw per-scenario tester
+agent logs, which are not committed, for full detail if needed).
