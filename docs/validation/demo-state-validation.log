@@ -1,0 +1,36 @@
+MT5 RiskGuard demo state validation
+Date: 2026-09-06
+Terminal: VS Capital MetaTrader 5, build 6182
+Environment: demo-backed Strategy Tester, hedging account (identity omitted)
+Expert: Experts\RiskGuard\RiskGuard.ex5
+Source SHA-256: BA1185D9217DF31CDF9B7976853BADD392224530A2B48C48A9A0FC38E1651081
+Symbol/timeframe: EURUSD,M1
+Test interval: 2026-01-19 00:00 through 2026-01-20 00:00
+Liquidation inputs: disabled for every run
+
+[PASS] SAFE
+Trigger: permissive session/spread inputs; EmergencyStop=false
+Evidence: [RiskGuard] INITIAL_STATE | state=SAFE reason=NONE
+Final balance: 10000.00 USD
+
+[PASS] RESTRICTED
+Trigger: MaxSpreadPoints=1; EmergencyStop=false
+Evidence: [RiskGuard] STATE_CHANGED | MT5 RiskGuard: SAFE -> RESTRICTED (SPREAD_LIMIT) | previous_reason=NONE
+Evidence: [RiskGuard] INITIAL_STATE | state=RESTRICTED reason=SPREAD_LIMIT
+Final balance: 10000.00 USD
+
+[PASS] EMERGENCY
+Trigger: EmergencyStop=true; ClosePositionsOnEmergencyStop=false
+Evidence: [RiskGuard] STATE_CHANGED | MT5 RiskGuard: SAFE -> EMERGENCY (EMERGENCY_STOP) | previous_reason=NONE
+Evidence: [RiskGuard] INITIAL_STATE | state=EMERGENCY reason=EMERGENCY_STOP
+Final balance: 10000.00 USD
+
+[NOT RUN] BLOCKED
+Planned trigger: MaxTradesPerDay=1 after an existing demo-account trade
+Reason: the demo account had no trades for the current broker day; no synthetic trade was opened.
+
+[NOT RUN] Liquidation and retry paths
+Reason: destructive inputs remained disabled. Multi-symbol closing, broker rejection,
+bounded retry exhaustion, and persistence-write failure paths require a controlled demo fixture.
+
+Privacy: account login, account holder, broker server identifier, and machine paths are omitted.

@@ -1,0 +1,8 @@
+MT5 RiskGuard compile validation
+Date: 2026-09-06
+Toolchain: MetaEditor 5 build 6182 (5.0.0.6182)
+Source: src/RiskGuard.mq5
+Source SHA-256: BA1185D9217DF31CDF9B7976853BADD392224530A2B48C48A9A0FC38E1651081
+Target: X64 Regular
+Result: 0 errors, 0 warnings
+Elapsed: 937 ms

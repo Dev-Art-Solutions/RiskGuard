@@ -11,11 +11,11 @@ MT5 RiskGuard is an independent, strategy-agnostic Expert Advisor that observes 
 ## Engineering challenges
 
 - **Broker-day tracking:** dates and sessions use server time, including sessions spanning midnight.
-- **Restart safety:** terminal global variables preserve the daily equity baseline and breach lock; trade counts rebuild from history.
+- **Restart safety:** checked terminal global-variable writes preserve the daily equity baseline, breach lock, and bounded close-retry state; trade counts rebuild from history.
 - **Monetary risk estimation:** `OrderCalcProfit` delegates Forex, CFD, and metal contract arithmetic to MT5 symbol rules.
 - **Trade semantics:** unique entry orders count once, while exit-only deals and partial closes do not become new trades.
 - **State composition:** temporary market restrictions cannot hide hard daily breaches, and emergency always wins.
-- **Controlled destruction:** close behavior requires explicit opt-in and uses persistent attempt markers to avoid retry loops.
+- **Controlled destruction:** close behavior requires explicit opt-in, selects filling by the target position symbol, and permits at most three persisted batches at five-second intervals.
 - **Honest enforcement:** chart-level software cannot promise broker-side interception of every external order.
 
 ## Architecture
@@ -38,7 +38,9 @@ The code remains a single source unit so a trading-systems client can audit the 
 - A daily-loss breach remains locked through the broker day even if equity later recovers.
 - Missing stop loss or failed symbol-risk calculation is never presented as zero risk.
 - Invalid inputs fail initialization instead of being silently corrected.
-- Close requests are synchronous, scoped, logged individually, and protected against repeated batches.
+- Close requests are synchronous, scoped, logged individually, and use bounded, restart-safe retries.
+- Persistence failures are explicit violations and cannot produce a `SAFE` state.
+- Global state includes a server hash so identical login numbers on different brokers cannot share state accidentally.
 - No strategy, signal, profitability claim, licensing, telemetry, or external broker integration is included.
 
 ## Client-relevant applications

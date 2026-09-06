@@ -19,7 +19,7 @@ Use a dedicated MT5 demo account. Record terminal build, broker/server timezone,
 | LOSS-01 | Below daily limit | Equity loss remains below threshold | No daily-loss block |
 | LOSS-02 | Daily breach | Equity loss reaches threshold | `BLOCKED`, `MAX_DAILY_LOSS`, persistent lock |
 | LOSS-03 | Destructive default | Breach with close option `false` | No close request is sent |
-| LOSS-04 | Opt-in liquidation | Breach with close option `true` on demo | One scoped close batch; attempt/result logged; no loop |
+| LOSS-04 | Opt-in liquidation | Breach with close option `true` on demo | Up to three scoped close batches, at least five seconds apart; attempt/result logged; no loop |
 | TRADE-01 | Entry count | Open entry orders including a partial fill | Same order counted once |
 | TRADE-02 | Exit exclusion | Partially or fully close a position | Exit-only deals do not increase count |
 | TRADE-03 | Daily limit | Reach `MaxTradesPerDay` | `BLOCKED` until the broker day changes |
@@ -40,9 +40,17 @@ Use a dedicated MT5 demo account. Record terminal build, broker/server timezone,
 | EMR-01 | Emergency off | `EmergencyStop=false` | Normal state evaluation |
 | EMR-02 | Emergency on | Set `EmergencyStop=true` | Immediate highest-priority `EMERGENCY` state |
 | EMR-03 | Emergency close default | Close option remains `false` | No close request |
-| EMR-04 | Emergency opt-in | Close option `true` on demo | One scoped close batch and audit trail |
+| EMR-04 | Emergency opt-in | Close option `true` on demo | Up to three scoped close batches and complete audit trail |
 | SCOPE-01 | Account scope | `MagicNumberFilter=0` | All positions/deals included |
 | SCOPE-02 | Magic scope | Positive filter with mixed magic values | Nonmatching positions/deals excluded from scoped controls |
+| SCOPE-03 | Server namespace | Compare generated keys for two different server names with equal login/magic values | Server hash and resulting keys differ; keys remain within MT5 limits |
+| CLOSE-01 | Multi-symbol filling | Open in-scope demo positions on symbols with different filling policies | Filling mode is selected from each position symbol immediately before its close request |
+| CLOSE-02 | Temporary close failure | Cause or observe a temporary demo close rejection | A second batch is scheduled no sooner than five seconds later |
+| CLOSE-03 | Retry ceiling | Keep a scoped demo position uncloseable | Exactly three batches; `LIQUIDATION_MAX_ATTEMPTS_REACHED`; no further requests |
+| CLOSE-04 | Retry restart | Restart after one failed batch | Persisted count/time continue the same bounded sequence |
+| PERSIST-01 | Baseline write failure | Exercise `SafeGlobalSet` failure in a controlled test environment | `BASELINE_PERSISTENCE_FAILED`, state cannot be `SAFE` |
+| PERSIST-02 | Daily-lock write failure | Exercise lock-write failure after a breach | In-memory lock remains; `DAILY_LOCK_PERSISTENCE_FAILED`; state remains `BLOCKED` |
+| PERSIST-03 | Retry-state write failure | Exercise retry count/time write failure | No untracked close batch; persistence failure logged; no uncontrolled loop |
 | STATE-01 | Multiple violations | Trigger spread plus daily loss | All violations shown; `BLOCKED` wins |
 | STATE-02 | Emergency priority | Trigger any violations plus emergency | `EMERGENCY` wins |
 | ALERT-01 | State transition | Move SAFE → RESTRICTED → SAFE | One alert/log per change; no per-tick spam |

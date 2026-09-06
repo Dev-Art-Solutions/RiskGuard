@@ -45,6 +45,9 @@ input bool EnablePushNotifications = false;
 
 CTrade trade;
 
+const int LIQUIDATION_MAX_BATCHES = 3;
+const int LIQUIDATION_RETRY_DELAY_SECONDS = 5;
+
 ENUM_RISKGUARD_STATE current_state = RISK_SAFE;
 string current_reason = "NONE";
 string active_violations = "";
@@ -57,6 +60,10 @@ int current_day_id = 0;
 datetime current_day_start = 0;
 bool daily_loss_locked = false;
 bool update_in_progress = false;
+bool baseline_persistence_failed = false;
+bool daily_lock_persistence_failed = false;
+bool emergency_retry_persistence_failed = false;
+bool daily_retry_persistence_failed = false;
 string global_prefix = "";
 string panel_name = "RiskGuard.StatusPanel";
 
@@ -85,6 +92,43 @@ void AddViolation(const string reason)
       active_violations = reason;
    else
       active_violations += "\n- " + reason;
+  }
+
+bool SafeGlobalSet(const string key,const double value,const string context)
+  {
+   ResetLastError();
+   datetime modified=GlobalVariableSet(key,value);
+   if(modified==0)
+     {
+      Audit("GLOBAL_VARIABLE_SET_FAILED",StringFormat("context=%s key=%s error=%d",context,key,GetLastError()));
+      return false;
+     }
+   GlobalVariablesFlush();
+   return true;
+  }
+
+bool SafeGlobalGet(const string key,double &value,const string context)
+  {
+   ResetLastError();
+   if(!GlobalVariableGet(key,value))
+     {
+      Audit("GLOBAL_VARIABLE_GET_FAILED",StringFormat("context=%s key=%s error=%d",context,key,GetLastError()));
+      return false;
+     }
+   return true;
+  }
+
+uint ServerIdentityHash(const string server)
+  {
+   // FNV-1a is compact and deterministic; this is namespace separation,
+   // not a cryptographic identity or security boundary.
+   uint hash=2166136261;
+   for(int index=0; index<StringLen(server); ++index)
+     {
+      hash^=(uint)StringGetCharacter(server,index);
+      hash*=16777619;
+     }
+   return hash;
   }
 
 int BrokerDayId(const datetime value)
@@ -194,18 +238,39 @@ void LoadTradingDay(const bool force=false)
 
    current_day_id=day_id;
    current_day_start=BrokerDayStart(now);
-   string baseline_key=DayKey("BaselineEquity");
-   string loss_lock_key=DayKey("DailyLossLocked");
+   baseline_persistence_failed=false;
+   daily_lock_persistence_failed=false;
+   daily_retry_persistence_failed=false;
+   string baseline_key=DayKey("BE");
+   string loss_lock_key=DayKey("DL");
 
    if(GlobalVariableCheck(baseline_key))
-      day_start_equity=GlobalVariableGet(baseline_key);
+     {
+      double stored_baseline=0.0;
+      if(SafeGlobalGet(baseline_key,stored_baseline,"daily baseline read") && stored_baseline>0.0)
+         day_start_equity=stored_baseline;
+      else
+        {
+         day_start_equity=0.0;
+         baseline_persistence_failed=true;
+        }
+     }
    else
      {
       day_start_equity=AccountInfoDouble(ACCOUNT_EQUITY);
-      GlobalVariableSet(baseline_key,day_start_equity);
+      if(day_start_equity<=0.0 || !SafeGlobalSet(baseline_key,day_start_equity,"daily baseline create"))
+         baseline_persistence_failed=true;
      }
 
-   daily_loss_locked=GlobalVariableCheck(loss_lock_key) && GlobalVariableGet(loss_lock_key)>0.5;
+   daily_loss_locked=false;
+   if(GlobalVariableCheck(loss_lock_key))
+     {
+      double stored_lock=0.0;
+      if(SafeGlobalGet(loss_lock_key,stored_lock,"daily loss lock read"))
+         daily_loss_locked=stored_lock>0.5;
+      else
+         daily_lock_persistence_failed=true;
+     }
    Audit("NEW_TRADING_DAY",StringFormat("day=%d baseline_equity=%.2f restored_lock=%s",
                                       current_day_id,day_start_equity,daily_loss_locked?"true":"false"));
   }
@@ -317,6 +382,13 @@ void CloseScopedPositions(const string trigger)
       string symbol=PositionGetString(POSITION_SYMBOL);
       Audit("POSITION_CLOSE_ATTEMPT",StringFormat("trigger=%s ticket=%I64u symbol=%s",trigger,ticket,symbol));
       ResetLastError();
+      if(!trade.SetTypeFillingBySymbol(symbol))
+        {
+         Audit("POSITION_CLOSE_FAILED",StringFormat("stage=filling_mode ticket=%I64u symbol=%s error=%d",
+                                                    ticket,symbol,GetLastError()));
+         continue;
+        }
+      ResetLastError();
       bool request_sent=trade.PositionClose(ticket);
       uint retcode=trade.ResultRetcode();
       if(request_sent && (retcode==TRADE_RETCODE_DONE || retcode==TRADE_RETCODE_DONE_PARTIAL))
@@ -327,14 +399,84 @@ void CloseScopedPositions(const string trigger)
      }
   }
 
-void LiquidateOnce(const string trigger,const string attempt_key)
+bool LoadRetryValue(const string key,double &value,const string context,bool &persistence_failed)
   {
-   if(!HasScopedPositions() || GlobalVariableCheck(attempt_key))
+   value=0.0;
+   if(!GlobalVariableCheck(key))
+      return true;
+   if(SafeGlobalGet(key,value,context))
+      return true;
+   persistence_failed=true;
+   return false;
+  }
+
+void ProcessLiquidation(const string trigger,const string count_key,const string time_key,bool &persistence_failed)
+  {
+   if(persistence_failed || !HasScopedPositions())
       return;
-   // The marker is written before execution, preventing repeated close loops
-   // even if the terminal or broker rejects one of the requests.
-   GlobalVariableSet(attempt_key,(double)TimeTradeServer());
+
+   double stored_count=0.0;
+   double stored_time=0.0;
+   if(!LoadRetryValue(count_key,stored_count,trigger+" retry count read",persistence_failed) ||
+      !LoadRetryValue(time_key,stored_time,trigger+" retry time read",persistence_failed))
+      return;
+
+   int attempts=(int)stored_count;
+   if(attempts>=LIQUIDATION_MAX_BATCHES)
+      return;
+
+   datetime now=TimeTradeServer();
+   if(stored_time>0.0 && now-(datetime)stored_time<LIQUIDATION_RETRY_DELAY_SECONDS)
+      return;
+
+   int next_attempt=attempts+1;
+   // Persist the bounded state before submitting close requests. If either
+   // write fails, consume no untracked batch and stop retrying this session.
+   if(!SafeGlobalSet(count_key,(double)next_attempt,trigger+" retry count write") ||
+      !SafeGlobalSet(time_key,(double)now,trigger+" retry time write"))
+     {
+      persistence_failed=true;
+      Audit("LIQUIDATION_RETRY_PERSISTENCE_FAILED",StringFormat("trigger=%s batch=%d",trigger,next_attempt));
+      return;
+     }
+
+   int positions_before=CountScopedPositions();
+   Audit("LIQUIDATION_BATCH_ATTEMPT",StringFormat("trigger=%s batch=%d/%d positions=%d",
+                                                 trigger,next_attempt,LIQUIDATION_MAX_BATCHES,positions_before));
    CloseScopedPositions(trigger);
+
+   int remaining=CountScopedPositions();
+   if(remaining==0)
+      Audit("LIQUIDATION_COMPLETED",StringFormat("trigger=%s batches=%d",trigger,next_attempt));
+   else if(next_attempt>=LIQUIDATION_MAX_BATCHES)
+      Audit("LIQUIDATION_MAX_ATTEMPTS_REACHED",StringFormat("trigger=%s attempts=%d remaining_positions=%d",
+                                                            trigger,next_attempt,remaining));
+   else
+      Audit("LIQUIDATION_RETRY_SCHEDULED",StringFormat("trigger=%s next_batch=%d delay_seconds=%d remaining_positions=%d",
+                                                       trigger,next_attempt+1,LIQUIDATION_RETRY_DELAY_SECONDS,remaining));
+  }
+
+bool DeleteRetryKey(const string key,const string context)
+  {
+   if(!GlobalVariableCheck(key))
+      return true;
+   ResetLastError();
+   if(!GlobalVariableDel(key))
+     {
+      Audit("GLOBAL_VARIABLE_DELETE_FAILED",StringFormat("context=%s key=%s error=%d",context,key,GetLastError()));
+      return false;
+     }
+   return true;
+  }
+
+void ResetEmergencyRetryState()
+  {
+   if(emergency_retry_persistence_failed)
+      return;
+   bool count_deleted=DeleteRetryKey(global_prefix+".EC","emergency retry reset count");
+   bool time_deleted=DeleteRetryKey(global_prefix+".ET","emergency retry reset time");
+   if(!count_deleted || !time_deleted)
+      emergency_retry_persistence_failed=true;
   }
 
 void NotifyStateChange(const ENUM_RISKGUARD_STATE old_state,const string old_reason)
@@ -397,6 +539,30 @@ void EvaluateRisk()
    bool blocked=false;
    bool restricted=false;
 
+   if(!EmergencyStop)
+      ResetEmergencyRetryState();
+
+   if(baseline_persistence_failed)
+     {
+      AddViolation("BASELINE_PERSISTENCE_FAILED");
+      blocked=true;
+     }
+   if(daily_lock_persistence_failed)
+     {
+      AddViolation("DAILY_LOCK_PERSISTENCE_FAILED");
+      blocked=true;
+     }
+   if(emergency_retry_persistence_failed)
+     {
+      AddViolation("EMERGENCY_RETRY_PERSISTENCE_FAILED");
+      blocked=true;
+     }
+   if(daily_retry_persistence_failed)
+     {
+      AddViolation("DAILY_RETRY_PERSISTENCE_FAILED");
+      blocked=true;
+     }
+
    double equity=AccountInfoDouble(ACCOUNT_EQUITY);
    if(day_start_equity>0.0)
       daily_loss_percent=MathMax(0.0,(day_start_equity-equity)/day_start_equity*100.0);
@@ -410,12 +576,18 @@ void EvaluateRisk()
    if(!daily_loss_locked && daily_loss_percent>=MaxDailyLossPercent)
      {
       daily_loss_locked=true;
-      GlobalVariableSet(DayKey("DailyLossLocked"),1.0);
+      if(!SafeGlobalSet(DayKey("DL"),1.0,"daily loss lock write"))
+         daily_lock_persistence_failed=true;
       Audit("DAILY_LOSS_BREACHED",StringFormat("loss=%.2f%% limit=%.2f%%",daily_loss_percent,MaxDailyLossPercent));
      }
    if(daily_loss_locked)
      {
       AddViolation("MAX_DAILY_LOSS");
+      blocked=true;
+     }
+   if(daily_lock_persistence_failed && StringFind(active_violations,"DAILY_LOCK_PERSISTENCE_FAILED")<0)
+     {
+      AddViolation("DAILY_LOCK_PERSISTENCE_FAILED");
       blocked=true;
      }
 
@@ -493,11 +665,9 @@ void EvaluateRisk()
       NotifyStateChange(old_state,old_reason);
 
    if(EmergencyStop && ClosePositionsOnEmergencyStop)
-      LiquidateOnce("EMERGENCY_STOP",global_prefix+".EmergencyCloseAttempt");
-   else if(!EmergencyStop)
-      GlobalVariableDel(global_prefix+".EmergencyCloseAttempt");
+      ProcessLiquidation("EMERGENCY_STOP",global_prefix+".EC",global_prefix+".ET",emergency_retry_persistence_failed);
    if(daily_loss_locked && ClosePositionsOnDailyLossBreach)
-      LiquidateOnce("MAX_DAILY_LOSS",DayKey("DailyLossCloseAttempt"));
+      ProcessLiquidation("MAX_DAILY_LOSS",DayKey("DC"),DayKey("DT"),daily_retry_persistence_failed);
 
    RenderPanel(session_active);
    update_in_progress=false;
@@ -526,15 +696,22 @@ int OnInit()
    if(!ValidateInputs())
       return INIT_PARAMETERS_INCORRECT;
 
-   global_prefix=StringFormat("RiskGuard.%I64d.%I64d",AccountInfoInteger(ACCOUNT_LOGIN),MagicNumberFilter);
+   string server=AccountInfoString(ACCOUNT_SERVER);
+   if(server=="")
+     {
+      Audit("INVALID_ACCOUNT_CONTEXT","ACCOUNT_SERVER is empty; persistent state cannot be namespaced safely");
+      return INIT_FAILED;
+     }
+   global_prefix=StringFormat("RG.%08X.%I64d.%I64d",ServerIdentityHash(server),
+                              AccountInfoInteger(ACCOUNT_LOGIN),MagicNumberFilter);
    trade.SetAsyncMode(false);
-   trade.SetTypeFillingBySymbol(_Symbol);
    LoadTradingDay(true);
    EventSetTimer(1);
    Audit("RISK_GUARD_STARTED",StringFormat("scope_magic=%I64d destructive_emergency=%s destructive_daily_loss=%s",
                                           MagicNumberFilter,ClosePositionsOnEmergencyStop?"true":"false",
                                           ClosePositionsOnDailyLossBreach?"true":"false"));
    EvaluateRisk();
+   Audit("INITIAL_STATE",StringFormat("state=%s reason=%s",StateName(current_state),current_reason));
    return INIT_SUCCEEDED;
   }
 

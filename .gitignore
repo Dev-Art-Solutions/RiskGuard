@@ -1,6 +1,8 @@
 # MetaEditor build output
 *.ex5
 *.log
+!docs/validation/metaeditor-compile.log
+!docs/validation/demo-state-validation.log
 
 # Local terminal/editor state
 .idea/

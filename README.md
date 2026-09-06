@@ -37,7 +37,7 @@ All active violations remain visible even when a higher-priority state wins.
 
 ## How enforcement works
 
-RiskGuard continuously monitors the account and enforces configured risk policies within the capabilities of MetaTrader 5. It can optionally close in-scope positions after an emergency stop or daily-loss breach. Both destructive actions are disabled by default and protected by persistent one-shot attempt markers.
+RiskGuard continuously monitors the account and enforces configured risk policies within the capabilities of MetaTrader 5. It can optionally close in-scope positions after an emergency stop or daily-loss breach. Both destructive actions are disabled by default. When enabled, liquidation is limited to three persisted close batches separated by at least five seconds; each target symbol selects its own supported filling mode immediately before the close request.
 
 An EA attached to one chart cannot guarantee pre-trade interception of every manual order or order sent by an unrelated EA. `SAFE`, `RESTRICTED`, and `BLOCKED` communicate whether new risk is permitted by policy; execution code that needs strict pre-trade gating should consult equivalent checks before sending its own orders.
 
@@ -51,7 +51,9 @@ The daily baseline is the account equity observed at the first RiskGuard check o
 Daily Loss % = max(0, (Start-of-Day Equity - Current Equity) / Start-of-Day Equity × 100)
 ```
 
-The baseline and breach lock are stored in MT5 terminal global variables keyed by account login, scope, and broker date. Restarting the EA therefore does not reset an existing baseline or unlock a breached day. If RiskGuard was not running at the start of a day and no saved baseline exists, its first observed equity becomes that day's baseline; exact earlier intraday equity cannot be reconstructed from deal history alone.
+The baseline and breach lock are stored in MT5 terminal global variables keyed by a deterministic server-identity hash, account login, scope, and broker date. Restarting the EA therefore does not reset an existing baseline or unlock a breached day, while equal login numbers on different servers remain isolated. Safety-critical writes are verified and flushed. A failed baseline or daily-lock persistence operation forces `BLOCKED` rather than silently weakening restart safety.
+
+If RiskGuard was not running at the start of a day and no saved baseline exists, its first observed equity becomes that day's baseline; exact earlier intraday equity cannot be reconstructed from deal history alone.
 
 ### Position risk
 
@@ -124,7 +126,15 @@ The implementation intentionally remains in one auditable source file: [`src/Ris
 
 ## Validation
 
-The repository quality workflow verifies required artifacts, safety defaults, state definitions, and internal-plan exclusion. Runtime scenarios are specified in [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) for MetaEditor and MT5 Strategy Tester/manual validation.
+Repository invariant checks and real compiler validation are deliberately separate.
+
+## Verified with MetaTrader 5
+
+- MetaEditor 5 build 6182 compile: **0 errors / 0 warnings**.
+- Repository safety/invariant checks: passing.
+- VS Capital demo-backed Strategy Tester validation: `SAFE`, `RESTRICTED`, and `EMERGENCY` passed on the final binary; `BLOCKED` and liquidation paths remain pending.
+
+See [`docs/validation/README.md`](docs/validation/README.md), the sanitized [`metaeditor-compile.log`](docs/validation/metaeditor-compile.log), and [`demo-state-validation.log`](docs/validation/demo-state-validation.log). Runtime scenarios are specified in [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md).
 
 ## Important limitations
 
@@ -133,6 +143,7 @@ The repository quality workflow verifies required artifacts, safety defaults, st
 - The daily baseline is exact only after the first saved observation for that broker day.
 - Risk estimates require valid symbol metadata and stop information.
 - Position-close requests can be rejected by the terminal, market, or broker; every attempt/result is logged.
+- Bounded retries improve temporary-failure handling but cannot guarantee that a broker accepts a close request.
 - This software is not financial advice and does not guarantee profitability or prevent all losses.
 - Test on a demo account before considering live use.
 
