@@ -1,0 +1,10 @@
+# MetaEditor build output
+*.ex5
+*.log
+
+# Local terminal/editor state
+.idea/
+.vscode/
+
+# Local AI agent implementation plans
+MT5_RISKGUARD_CODEX_PLAN.md

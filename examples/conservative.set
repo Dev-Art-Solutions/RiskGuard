@@ -1,0 +1,17 @@
+MaxDailyLossPercent=2.0
+MaxRiskPerTradePercent=0.5
+MaxOpenPositions=2
+MaxTradesPerDay=4
+RejectTradesWithoutSL=true
+UseTradingHours=true
+TradingStartHour=8
+TradingStartMinute=0
+TradingEndHour=17
+TradingEndMinute=0
+MaxSpreadPoints=25
+EmergencyStop=false
+ClosePositionsOnEmergencyStop=false
+ClosePositionsOnDailyLossBreach=false
+MagicNumberFilter=0
+EnableTerminalAlerts=true
+EnablePushNotifications=false
