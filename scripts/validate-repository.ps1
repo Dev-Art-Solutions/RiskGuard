@@ -9,6 +9,7 @@ $requiredFiles = @(
     'PORTFOLIO_CASE_STUDY.md',
     'docs/TEST_PLAN.md',
     'docs/RELEASE_NOTES_v1.0.0.md',
+    'docs/RELEASE_READINESS_v1.0.0.md',
     'docs/GITHUB_METADATA.md',
     'docs/validation/README.md',
     'docs/validation/metaeditor-compile.log',
