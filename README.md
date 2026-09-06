@@ -154,6 +154,16 @@ Built by **Dev Art Solutions — Trading Systems Engineering**<br>
 
 See the [`PORTFOLIO_CASE_STUDY.md`](PORTFOLIO_CASE_STUDY.md) for engineering decisions and client-relevant applications.
 
+## Dev Art Solutions Trading Systems
+
+Part of the Dev Art Solutions trading systems portfolio:
+
+- [TradeAudit](https://github.com/Dev-Art-Solutions/TradeAudit) -- post-trade analytics and behavioral intelligence
+- MT5 RiskGuard -- native MQL5 risk controls
+- [MT5 Execution Bridge](https://github.com/Dev-Art-Solutions/MT5-Execution-Bridge) -- local-first Python <-> MT5 execution infrastructure
+
+https://trading.devart.solutions
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
